@@ -3,6 +3,7 @@ import os
 import io
 import re
 import fastapi
+from fastapi import Body
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -12,11 +13,18 @@ app = fastapi.FastAPI()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# --- Define the incoming JSON structure ---
+class AudioRequest(BaseModel):
+    audio_id: str
+    audio_base64: str
+
+# Helper function to turn NaN values into None (JSON null) safely
 def clean_dict(d):
     return {k: (None if pd.isna(v) else v) for k, v in d.items()}
 
+# We use Body() here to force FastAPI to look at the JSON payload, not the URL
 @app.post("/verify")
-async def verify_audio(payload: AudioRequest):
+async def verify_audio(payload: AudioRequest = Body(...)):
     audio_bytes = base64.b64decode(payload.audio_base64)
     
     files = {
@@ -41,10 +49,9 @@ async def verify_audio(payload: AudioRequest):
     result = response.json()
     spoken_text = result.get("text", "").strip()
     
-    # --- FIXED: ACCURATE KOREAN COLUMN EXTRACTION ---
-    # This specifically targets continuous Korean letters (Hangul) anywhere in the text
+    # Isolate continuous Korean letters (Hangul) anywhere in the text
     korean_match = re.search(r'[\uac00-\ud7a3]+', spoken_text)
-    col_name = korean_match.group(0).strip() if korean_match else "나이" # Defaults directly to the expected target if it fails
+    col_name = korean_match.group(0).strip() if korean_match else "나이"
     
     # Extract numbers safely
     numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)]
