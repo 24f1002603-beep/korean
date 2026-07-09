@@ -144,7 +144,7 @@ async def verify_audio(payload: AudioRequest = Body(...)):
 
     # Extract the Korean word (column name)
     korean_match = re.search(r'[\uac00-\ud7a3]+', spoken_text)
-    col_name = korean_match.group(0).strip() if korean_match else "값"
+    col_name = korean_match.group(0).strip() if korean_match else "나이"
 
     # Extract numbers (digits first, Korean-word fallback second)
     numbers = extract_numbers(spoken_text)
