@@ -13,16 +13,13 @@ app = fastapi.FastAPI()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# --- Define the incoming JSON structure ---
 class AudioRequest(BaseModel):
     audio_id: str
     audio_base64: str
 
-# Helper function to turn NaN values into None (JSON null) safely
 def clean_dict(d):
     return {k: (None if pd.isna(v) else v) for k, v in d.items()}
 
-# We use Body() here to force FastAPI to look at the JSON payload, not the URL
 @app.post("/verify")
 async def verify_audio(payload: AudioRequest = Body(...)):
     audio_bytes = base64.b64decode(payload.audio_base64)
@@ -62,6 +59,13 @@ async def verify_audio(payload: AudioRequest = Body(...)):
     df = pd.DataFrame({col_name: numbers})
     numeric_df = df.select_dtypes(include=[np.number])
     
+    # --- FIXED: STRICT CORRELATION ARRAY HANDLING ---
+    # If there is only 1 numeric column or fewer, correlation must be an empty list []
+    if numeric_df.shape[1] <= 1:
+        corr_matrix = []
+    else:
+        corr_matrix = [[None if pd.isna(cell) else cell for cell in row] for row in numeric_df.corr().values.tolist()]
+    
     # Compute stats structure
     stats = {
         "rows": len(df),
@@ -76,7 +80,7 @@ async def verify_audio(payload: AudioRequest = Body(...)):
         "range": clean_dict((numeric_df.max() - numeric_df.min()).to_dict()),
         "allowed_values": {},  
         "value_range": {},    
-        "correlation": [[None if pd.isna(cell) else cell for cell in row] for row in numeric_df.corr().values.tolist()] if not numeric_df.empty else []
+        "correlation": corr_matrix
     }
     
     return stats
