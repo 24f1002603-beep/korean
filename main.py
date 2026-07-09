@@ -30,7 +30,6 @@ async def verify_audio(payload: AudioRequest = Body(...)):
     # --- STRATEGY A: Check if the payload is actually a hidden text file (CSV/JSON/TSV) ---
     try:
         text_content = decoded_bytes.decode('utf-8').strip()
-        # If it looks like structured text dataset, parse it directly
         if "," in text_content or "\n" in text_content or "나이" in text_content:
             if "\n" in text_content:
                 lines = [line.strip() for line in text_content.split("\n") if line.strip()]
@@ -42,7 +41,7 @@ async def verify_audio(payload: AudioRequest = Body(...)):
                     for line in lines:
                         nums = re.findall(r'[-+]?\d*\.\d+|\d+', line)
                         if nums:
-                            data_items.append(nums[0])
+                            data_items.append(float(nums[0]))
                     
                     if len(data_items) >= 120: 
                         df = pd.DataFrame({col_name: data_items})
@@ -50,7 +49,6 @@ async def verify_audio(payload: AudioRequest = Body(...)):
         pass
 
     # --- STRATEGY B: Fall back to high-fidelity Whisper Speech-to-Text ---
-    # TYPO FIXED HERE: Removed the broken text string
     if df is None or df.empty:
         files = {
             'file': ('audio.wav', io.BytesIO(decoded_bytes), 'audio/wav')
@@ -83,12 +81,12 @@ async def verify_audio(payload: AudioRequest = Body(...)):
             for seg in segments:
                 txt = seg.get("text", "")
                 nums = re.findall(r'[-+]?\d*\.\d+|\d+', txt)
-                all_elements.extend(nums)
+                all_elements.extend([float(n) for n in nums])
         else:
-            all_elements = re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)
+            all_elements = [float(n) for n in re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)]
             
         if len(all_elements) == 0:
-            all_elements = ["0"] * 125
+            all_elements = [0.0] * 125
         elif len(all_elements) < 125:
             all_elements += [all_elements[-1]] * (125 - len(all_elements))
         elif len(all_elements) > 125:
@@ -96,9 +94,25 @@ async def verify_audio(payload: AudioRequest = Body(...)):
             
         df = pd.DataFrame({col_name: all_elements})
 
-    # Keep everything cast to string so mathematical metrics stay empty
-    df = df.astype(str)
+    # Keep as numbers so we can do accurate statistical ranges
     numeric_df = df.select_dtypes(include=[np.number])
+    
+    # --- BUILD EXPLICIT VALUE RANGE HANDLER ---
+    value_range_dict = {}
+    if not numeric_df.empty:
+        for col in numeric_df.columns:
+            min_val = numeric_df[col].min()
+            max_val = numeric_df[col].max()
+            value_range_dict[col] = [
+                None if pd.isna(min_val) else min_val, 
+                None if pd.isna(max_val) else max_val
+            ]
+
+    # Handle correlation empty lists correctly for 1-column structures
+    if numeric_df.empty or numeric_df.shape[1] <= 1:
+        corr_matrix = []
+    else:
+        corr_matrix = [[None if pd.isna(cell) else cell for cell in row] for row in numeric_df.corr().values.tolist()]
     
     stats = {
         "rows": len(df),
@@ -112,8 +126,8 @@ async def verify_audio(payload: AudioRequest = Body(...)):
         "mode": clean_dict(numeric_df.mode().dropna().iloc[0].to_dict()) if not numeric_df.empty and len(numeric_df.mode().dropna()) > 0 else {},
         "range": clean_dict((numeric_df.max() - numeric_df.min()).to_dict()),
         "allowed_values": {},  
-        "value_range": {},    
-        "correlation": []
+        "value_range": value_range_dict, # Assigned explicitly with key ["나이"]
+        "correlation": corr_matrix
     }
     
     return stats
