@@ -16,6 +16,10 @@ class AudioRequest(BaseModel):
     audio_id: str
     audio_base64: str
 
+# Helper function to turn NaN values into None (JSON null) safely
+def clean_dict(d):
+    return {k: (None if pd.isna(v) else v) for k, v in d.items()}
+
 @app.post("/verify")
 async def verify_audio(payload: AudioRequest):
     audio_bytes = base64.b64decode(payload.audio_base64)
@@ -28,7 +32,7 @@ async def verify_audio(payload: AudioRequest):
     }
     data = {
         "model": "openai/whisper-large-v3",
-        "response_format": "json", # Standard transcription text JSON format is fine now
+        "response_format": "json",
         "language": "ko"
     }
     
@@ -42,43 +46,43 @@ async def verify_audio(payload: AudioRequest):
     result = response.json()
     spoken_text = result.get("text", "").strip()
     
-    # --- NEW: PARSE THE SPOKEN DATASET ---
-    # Example spoken_text: "나이: 20, 30, 40" or "나이 20 30 40"
-    
     # 1. Figure out the Column Name
     if ":" in spoken_text:
         col_part, num_part = spoken_text.split(":", 1)
         col_name = col_part.strip()
     else:
-        # Grab the first block of Korean letters before any numbers start
         match = re.search(r'([^\d\s,]+)', spoken_text)
         col_name = match.group(1).strip() if match else "data"
         num_part = spoken_text
 
-    # 2. Extract all numbers from the text
+    # 2. Extract numbers safely 
     numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', num_part)]
-    if not numbers: # Fallback check on whole text if parsing split missed something
+    if not numbers: 
         numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)]
     
-    # 3. Create the true dataset DataFrame
+    # If absolutely no numbers are found, fill with a placeholder to prevent empty dataset crashes
+    if not numbers:
+        numbers = [0.0]
+
+    # 3. Create DataFrame
     df = pd.DataFrame({col_name: numbers})
     numeric_df = df.select_dtypes(include=[np.number])
     
-    # 4. Compute strict format structure based on the spoken data
+    # 4. Compute and clean strict formatting structure
     stats = {
         "rows": len(df),
         "columns": list(df.columns),
-        "mean": numeric_df.mean().to_dict(),
-        "std": numeric_df.std().to_dict(),
-        "variance": numeric_df.var().to_dict(),
-        "min": numeric_df.min().to_dict(),
-        "max": numeric_df.max().to_dict(),
-        "median": numeric_df.median().to_dict(),
-        "mode": numeric_df.mode().dropna().iloc[0].to_dict() if not numeric_df.empty and len(numeric_df.mode().dropna()) > 0 else {},
-        "range": (numeric_df.max() - numeric_df.min()).to_dict(),
+        "mean": clean_dict(numeric_df.mean().to_dict()),
+        "std": clean_dict(numeric_df.std().to_dict()),
+        "variance": clean_dict(numeric_df.var().to_dict()),
+        "min": clean_dict(numeric_df.min().to_dict()),
+        "max": clean_dict(numeric_df.max().to_dict()),
+        "median": clean_dict(numeric_df.median().to_dict()),
+        "mode": clean_dict(numeric_df.mode().dropna().iloc[0].to_dict()) if not numeric_df.empty and len(numeric_df.mode().dropna()) > 0 else {},
+        "range": clean_dict((numeric_df.max() - numeric_df.min()).to_dict()),
         "allowed_values": {},  
         "value_range": {},    
-        "correlation": numeric_df.corr().values.tolist() if not numeric_df.empty else []
+        "correlation": [[None if pd.isna(cell) else cell for cell in row] for row in numeric_df.corr().values.tolist()] if not numeric_df.empty else []
     }
     
     return stats
