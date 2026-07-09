@@ -46,22 +46,24 @@ async def verify_audio(payload: AudioRequest = Body(...)):
     result = response.json()
     spoken_text = result.get("text", "").strip()
     
-    # Isolate continuous Korean letters (Hangul) anywhere in the text
+    # Extract continuous Korean letters (Hangul) for the column name
     korean_match = re.search(r'[\uac00-\ud7a3]+', spoken_text)
     col_name = korean_match.group(0).strip() if korean_match else "나이"
     
     # Extract numbers safely
     numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)]
-    if not numbers:
-        numbers = [0.0]
 
-    # Create DataFrame
-    df = pd.DataFrame({col_name: numbers})
+    # --- CHANGED: NO MORE FORCEFUL FALLBACK ---
+    # If numbers list is empty, we build an empty DataFrame with the column name
+    if not numbers:
+        df = pd.DataFrame(columns=[col_name])
+    else:
+        df = pd.DataFrame({col_name: numbers})
+        
     numeric_df = df.select_dtypes(include=[np.number])
     
-    # --- FIXED: STRICT CORRELATION ARRAY HANDLING ---
-    # If there is only 1 numeric column or fewer, correlation must be an empty list []
-    if numeric_df.shape[1] <= 1:
+    # If the dataframe has no rows, correlation is empty []
+    if numeric_df.empty or numeric_df.shape[1] <= 1:
         corr_matrix = []
     else:
         corr_matrix = [[None if pd.isna(cell) else cell for cell in row] for row in numeric_df.corr().values.tolist()]
