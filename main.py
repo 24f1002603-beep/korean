@@ -1,6 +1,7 @@
 import base64
 import os
 import io
+import re
 import fastapi
 from pydantic import BaseModel
 import pandas as pd
@@ -9,7 +10,6 @@ import requests
 
 app = fastapi.FastAPI()
 
-# Pull the API key securely from Render's Environment Variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 class AudioRequest(BaseModel):
@@ -18,11 +18,8 @@ class AudioRequest(BaseModel):
 
 @app.post("/verify")
 async def verify_audio(payload: AudioRequest):
-    # 1. Decode Base64 to raw audio bytes
     audio_bytes = base64.b64decode(payload.audio_base64)
     
-    # 2. Send the raw audio to OpenRouter's Whisper API
-    # Using files tuple to send in-memory bytes without writing to Render's disk
     files = {
         'file': ('audio.wav', io.BytesIO(audio_bytes), 'audio/wav')
     }
@@ -30,9 +27,9 @@ async def verify_audio(payload: AudioRequest):
         "Authorization": f"Bearer {OPENROUTER_API_KEY}"
     }
     data = {
-        "model": "openai/whisper-large-v3", # Standard robust whisper model
-        "response_format": "verbose_json",  # CRITICAL: This gives us timestamps/segments!
-        "language": "ko"                     # Forces Korean transcription
+        "model": "openai/whisper-large-v3",
+        "response_format": "json", # Standard transcription text JSON format is fine now
+        "language": "ko"
     }
     
     response = requests.post(
@@ -43,16 +40,31 @@ async def verify_audio(payload: AudioRequest):
     )
     
     result = response.json()
+    spoken_text = result.get("text", "").strip()
     
-    # 3. Pull segments to build the DataFrame
-    segments = result.get("segments", [])
-    df = pd.DataFrame(segments)
+    # --- NEW: PARSE THE SPOKEN DATASET ---
+    # Example spoken_text: "나이: 20, 30, 40" or "나이 20 30 40"
     
-    # Isolate numeric metrics (ids, start, end, temperature, etc.)
+    # 1. Figure out the Column Name
+    if ":" in spoken_text:
+        col_part, num_part = spoken_text.split(":", 1)
+        col_name = col_part.strip()
+    else:
+        # Grab the first block of Korean letters before any numbers start
+        match = re.search(r'([^\d\s,]+)', spoken_text)
+        col_name = match.group(1).strip() if match else "data"
+        num_part = spoken_text
+
+    # 2. Extract all numbers from the text
+    numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', num_part)]
+    if not numbers: # Fallback check on whole text if parsing split missed something
+        numbers = [float(x) for x in re.findall(r'[-+]?\d*\.\d+|\d+', spoken_text)]
+    
+    # 3. Create the true dataset DataFrame
+    df = pd.DataFrame({col_name: numbers})
     numeric_df = df.select_dtypes(include=[np.number])
     
-    # 4. Compute strict format structure
-    # If a stat empty (like mode), fall back to an empty dictionary
+    # 4. Compute strict format structure based on the spoken data
     stats = {
         "rows": len(df),
         "columns": list(df.columns),
